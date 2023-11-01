@@ -49,17 +49,10 @@ def compute_target_dirs_and_source_target_pairs(target, /, *sources,
                                                 force_remove, ignore_name):
     target = os.path.normpath(target)
     sources = tuple(OrderedDict.fromkeys( os.path.normpath(s) for s in sources ))
-    g_i = lambda root_dir, gitignore_root_dir: ( root_dir + os.sep + i
-                                                 for i in rparse_gitignore(
-                                                         gitignore_name=ignore_name,
-                                                         root_dir=root_dir,
-                                                         gitignore_root_dir=gitignore_root_dir,
-                                                         include_all_types=True,
-                                                         append_ignore=[f'/{ignore_name}']) )
-    ignore_set = set(chain(
-        chain.from_iterable(g_i(s, target) for s in sources),
-        chain.from_iterable(g_i(s, s) for s in sources)
-    ))
+    rparse_ignore = lambda r, gr: rparse_gitignore(root_dir=r,
+                                                   gitignore_root_dir=gr,
+                                                   gitignore_name=ignore_name)
+    ignore_set = set( i for s in sources for i in chain(rparse_ignore(s, target), rparse_ignore(s, s)) )
 
     TDs, TSs = zip(*( rscan(s, s, target, ignore_set) for s in sources ))
     T = set()
@@ -124,21 +117,21 @@ def rscan(source_root, sd, target_root, ignore_set):
     target_to_source = {}
     with sc:
         for e in sc:
-            if e.path in ignore_set:
-                logger.debug('scan:ignored:%s', e.path)
+            base = e.path[len(source_root):].removeprefix(os.sep)
+            if base in ignore_set:
+                logger.debug('scan:ignored:%s', base)
                 continue
             try:
                 _ = e.stat()
             except FileNotFoundError as e:
                 logger.warning('scan:%s', e)
                 continue
-            s = e.path
-            t = target_root + s.removeprefix(source_root)
+            t = target_root + os.sep + base
             if e.is_dir() & (not e.is_symlink()):
-                source_dirs.append(s)
+                source_dirs.append(e.path)
                 target_dirs.append(t)
             else:
-                target_to_source[t] = s
+                target_to_source[t] = e.path
 
     for sd in source_dirs:
         TD, TS = rscan(source_root, sd, target_root, ignore_set)

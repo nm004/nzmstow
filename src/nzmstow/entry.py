@@ -24,9 +24,6 @@ def main():
                         action='store_true')
     parser.add_argument('-l', help='create hard links instead of symbolic links',
                         action='store_true')
-#    parser.add_argument('--no-parallel', help='force to not take actioins for SOURCEs'
-#                                              ' in parallel', 
-#                        action='store_false')
     parser.add_argument('-q', help='decrease output verbosity (qq is quieter)',
                         action='count', default=0)
     parser.add_argument('-v', help='increase output verbosity (vv is more verbose)',
@@ -54,31 +51,24 @@ def main():
         print(f'Target directory \'{t}\' does not exist.')
         return 1
 
-    tdrv = os.path.splitdrive(t)[0]
     S = args.source
     for s in S:
         if not os.path.isdir(s):
             print(f'Source directory \'{s}\' does not exist.')
             return 1
 
-        if args.l and os.stat(s).st_dev != os.stat(t).st_dev:
-            print(f'Target directory \'{t}\' and source directory'
-                  f' \'{s}\' must be on the same device for hardlink.')
-            return 1
-
-        sdrv = os.path.splitdrive(s)[0]
-        if tdrv != sdrv and (not os.path.isabs(s) or not os.path.isabs(t)):
-            print(f'You have to specify target/source directory \'{s}\''
-                  f' with absolute path if target directory and source directory'
-                  f' have a different drive letter.')
-            return 1
-
     if args.D:
         f = lambda t, *S: unstow(t, *S, dry_run=args.n, force_remove=args.f)
     else:
+        if args.l:
+            for s in S:
+                if os.stat(s).st_dev != os.stat(t).st_dev:
+                    print(f'Target directory \'{t}\' and source directory'
+                          f' \'{s}\' must be on the same device for hardlink.')
+                    return 1
         f = lambda t, *S: stow(t, *S, dry_run=args.n, force_remove=args.f,
                                create_hardlink=args.l)
     try:
-        f(t, *S)
+      f(t, *S)
     except StowError as e:
         return 2
