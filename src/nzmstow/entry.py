@@ -46,29 +46,30 @@ def main():
         level = logging.DEBUG
     logging.basicConfig(level=level)
 
-    t = args.t
-    if not os.path.isdir(t):
-        print(f'Target directory \'{t}\' does not exist.')
+    if not os.path.isdir(args.t):
+        print(f'Target directory \'{args.t}\' does not exist.')
         return 1
 
-    S = args.source
-    for s in S:
+    for s in args.source:
         if not os.path.isdir(s):
             print(f'Source directory \'{s}\' does not exist.')
             return 1
 
+    kwargs = {}
     if args.D:
-        f = lambda t, *S: unstow(t, *S, dry_run=args.n, force_remove=args.f)
+        stw = unstow
     else:
+        stw = stow
         if args.l:
-            for s in S:
-                if os.stat(s).st_dev != os.stat(t).st_dev:
-                    print(f'Target directory \'{t}\' and source directory'
+            for s in args.source:
+                if os.stat(s).st_dev != os.stat(args.t).st_dev:
+                    print(f'Target directory \'{args.t}\' and source directory'
                           f' \'{s}\' must be on the same device for hardlink.')
                     return 1
-        f = lambda t, *S: stow(t, *S, dry_run=args.n, force_remove=args.f,
-                               create_hardlink=args.l)
+        kwargs.update(dict(create_hardlink=args.l))
+
+    kwargs.update(dict(dry_run=args.n, force_remove=args.f))
     try:
-      f(t, *S)
+      stw(args.t, *args.source, **kwargs)
     except StowError as e:
         return 2

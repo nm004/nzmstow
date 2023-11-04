@@ -4,97 +4,95 @@ import stat
 import logging
 import concurrent.futures as cf
 from collections import OrderedDict
+from itertools import islice
 from functools import partial
-from itertools import chain, islice, repeat
-from .ignore import rparse_gitignore
+from contextlib import ExitStack
+from .ignore import parse_ignores
 
 logger = logging.getLogger(__name__)
 
-def stow(target, /, *sources, dry_run=False,
+def stow(tgt, /, *srcs, dry_run=False,
          force_remove=False, create_hardlink=False,
          ignore_name='.nzmstow-local-ignore'):
-    dry_run_warning(dry_run)
+    warn_dry_run(dry_run)
 
-    TD, ST = compute_target_dirs_and_source_target_pairs(target, *sources,
-                                                         force_remove=force_remove,
-                                                         ignore_name=ignore_name)
+    dst_dirs, src_files, dst_files = scanfs(tgt, *srcs, ignore_name=ignore_name)
 
     if force_remove:
-        batch_apply(partial(batch_remove, rm=remove, dry_run=dry_run),
-                    tuple(chain(ST, zip(repeat(None), TD))))
+        batch_apply(partial(remove, dry_run=dry_run), (d for D in (dst_dirs, dst_files) for d in D))
 
-    for td in TD:
-        mkdir(td, dry_run=dry_run)
+    for d in dst_dirs:
+        mkdir(d, dry_run=dry_run)
 
-    batch_apply(partial(batch_link,
-                        ln=(link if create_hardlink else symlink),
-                        dry_run=dry_run), ST)
+    ln = link if create_hardlink else symlink
+    batch_apply(partial(ln, dry_run=dry_run), src_files, dst_files)
 
-def unstow(target, /, *sources, dry_run=False,
+def unstow(tgt, /, *srcs, dry_run=False,
            force_remove=False,
            ignore_name='.nzmstow-local-ignore'):
-    dry_run_warning(dry_run)
+    warn_dry_run(dry_run)
 
-    TD, ST = compute_target_dirs_and_source_target_pairs(target, *sources,
-                                                         force_remove=force_remove,
-                                                         ignore_name=ignore_name)
+    dst_dirs, src_files, dst_files = scanfs(tgt, *srcs, ignore_name=ignore_name)
 
-    batch_apply(partial(batch_remove,
-                        rm=( remove if force_remove else safe_remove ),
-                        dry_run=dry_run), ST)
-    for td in reversed(TD):
-        rmdir(td, dry_run=dry_run)
+    if force_remove:
+        rm = remove
+        args = (src_files,)
+    else:
+        rm = safe_remove
+        args = (src_files, dst_files)
+    batch_apply(partial(rm, dry_run=dry_run), *args)
 
-def compute_target_dirs_and_source_target_pairs(target, /, *sources,
-                                                force_remove, ignore_name):
-    target = os.path.normpath(target)
-    sources = tuple(OrderedDict.fromkeys( os.path.normpath(s) for s in sources ))
-    rparse_ignore = lambda r, gr: rparse_gitignore(root_dir=r,
-                                                   gitignore_root_dir=gr,
-                                                   gitignore_name=ignore_name)
-    ignore_set = set( i for s in sources for i in chain(rparse_ignore(s, target), rparse_ignore(s, s)) )
+    for d in reversed(dst_dirs):
+        rmdir(d, dry_run=dry_run)
 
-    TDs, TSs = zip(*( rscan(s, s, target, ignore_set) for s in sources ))
-    T = set()
-    dupT = set()
-    for TS in TSs:
-        for ts in TS:
-            if ts in T:
-                dupT.add(ts)
-            else:
-                T.add(ts)
-    for t in dupT:
-        for TS in TSs:
-            try:
-                logger.warning('overlap:%s', TS[t])
-            except:
-                pass
-
-    TD = tuple( td for TD in TDs for td in TD )
-    TSs = reversed(TSs) if not force_remove else TSs
-    ST = tuple( (s,t) for TS in TSs for t,s in TS.items() )
-
-    return TD, ST
-
-def dry_run_warning(dry_run):
+def warn_dry_run(dry_run):
     if dry_run:
         logger.warning('This is dry-run. None of the commands will be actually performed')
 
-def batch_apply(func, ST):
+def scanfs(tgt, /, *srcs, ignore_name):
+    tgt = os.path.realpath(tgt, strict=True)
+    dirs = {}
+    files = {}
+    for s in OrderedDict.fromkeys( os.path.realpath(s, strict=True) for s in srcs ):
+        dirs_tmp = {}
+        files_tmp = {}
+        ignores = []
+        for p,_,F in os.walk(s):
+            base = p[len(s):].removeprefix(os.sep)
+            dirs_tmp[base] = p
+            files_tmp.update({ base + (os.sep * bool(base)) + f: p + os.sep + f for f in F })
+            for f in (p + os.sep + ignore_name,
+                      tgt + os.sep + base + (os.sep * bool(base)) + ignore_name):
+                try:
+                    if stat.S_ISREG(os.lstat(f).st_mode):
+                        ignores.append((p, f))
+                except (OSError, ValueError, FileNotFoundError):
+                    pass
+
+        with ExitStack() as stack:
+            ignores = parse_ignores( (p, stack.enter_context(open(f)).readlines()) for p, f in ignores )
+
+        dirs.update({ base: p for base, p in dirs_tmp.items() if p not in ignores })
+        files.update({ base_f: src for base_f, src in files_tmp.items() if src not in ignores })
+
+    del dirs['']
+    return (
+        tuple( tgt + os.sep + base for base in dirs),
+        tuple(files.values()),
+        tuple( tgt + os.sep + base_f for base_f in files.keys() )
+    )
+
+def batch_apply(func, *iterables):
     max_workers = os.cpu_count() or 1
     with cf.ProcessPoolExecutor(max_workers) as ex:
-        fs = ( ex.submit(func, subST)
-               for subST in batched(ST, max_workers + len(ST) // max_workers) )
-        for f in cf.as_completed(fs):
+        n = max_workers + len(iterables[0]) // max_workers
+        Z = zip(*( batched(i, n) for i in iterables ), strict=True)
+        for f in cf.as_completed( ex.submit(batch_func, func, *B) for B in Z ):
             f.result()
 
-def batch_link(ST, /, ln, dry_run):
-    for sf, tf in ST:
-        ln(sf, tf, dry_run=dry_run)
-
-def batch_remove(STFD, /, rm, dry_run):
-    for sfd, tfd in STFD:
-        rm(sfd, tfd, dry_run=dry_run)
+def batch_func(func, *iterables):
+    for i in zip(*iterables, strict=True):
+        func(*i)
 
 def batched(iterable, n):
     # batched('ABCDEFG', 3) --> ABC DEF G
@@ -104,51 +102,15 @@ def batched(iterable, n):
     while batch := tuple(islice(it, n)):
         yield batch
 
-def rscan(source_root, sd, target_root, ignore_set):
+def mkdir(path, /, dry_run):
     try:
-        sc = os.scandir(sd)
-    except OSError:
-        logger.warning('scan:%s', e)
-        return [], []
-
-    # breadth first search
-    target_dirs = []
-    source_dirs = []
-    target_to_source = {}
-    with sc:
-        for e in sc:
-            base = e.path[len(source_root):].removeprefix(os.sep)
-            if base in ignore_set:
-                logger.debug('scan:ignored:%s', base)
-                continue
-            try:
-                _ = e.stat()
-            except FileNotFoundError as e:
-                logger.warning('scan:%s', e)
-                continue
-            t = target_root + os.sep + base
-            if e.is_dir() & (not e.is_symlink()):
-                source_dirs.append(e.path)
-                target_dirs.append(t)
-            else:
-                target_to_source[t] = e.path
-
-    for sd in source_dirs:
-        TD, TS = rscan(source_root, sd, target_root, ignore_set)
-        target_dirs.extend(TD)
-        target_to_source.update(TS)
-
-    return target_dirs, target_to_source
-
-def mkdir(td, /, dry_run):
-    try:
-        logger.info('mkdir:%s', td)
+        logger.info('mkdir:%s', path)
         if dry_run:
             return
-        os.mkdir(td)
+        os.mkdir(path)
     except FileExistsError as e:
         try:
-            if not stat.S_ISDIR(os.lstat(td).st_mode):
+            if not stat.S_ISDIR(os.lstat(path).st_mode):
                 logger.warning('mkdir:%s', e)
         except FileNotFoundError:
             return False
@@ -156,68 +118,67 @@ def mkdir(td, /, dry_run):
         logger.error('failed:mkdir:%s', e)
         raise StowError from e
 
-def link(sf, tf, /, dry_run):
+def link(src, dst, /, dry_run):
     try:
-        logger.info('link:%s', tf)
+        logger.info('link:%s', dst)
         if dry_run:
             return
-        os.link(sf, tf, follow_symlinks=False)
+        os.link(src, dst, follow_symlinks=False)
     except FileExistsError as e:
-        if not samefile(sf, tf):
+        if not samefile(src, dst):
             logger.warning('link:%s', e)
     except OSError as e:
         logger.error('failed:link:%s', e)
         raise StowError from e
 
-def symlink(sf, tf, /, dry_run):
-    if not os.path.isabs(sf):
-        sf = os.path.relpath(os.path.abspath(sf),
-                             os.path.abspath(os.path.dirname(tf)))
+def symlink(src, dst, /, dry_run):
+    src = os.path.relpath(os.path.abspath(src),
+                          os.path.abspath(os.path.dirname(dst)))
     try:
-        logger.info('symlink:%s -> %s', sf, tf)
+        logger.info('symlink:%s -> %s', src, dst)
         if dry_run:
             return
-        os.symlink(sf, tf)
+        os.symlink(src, dst)
     except FileExistsError as e:
-        sf = os.path.join(os.path.dirname(tf), sf)
-        if not samefile(sf, tf):
+        src = os.path.join(os.path.dirname(dst), src)
+        if not samefile(src, dst):
             logger.warning('symlink:%s', e)
     except OSError as e:
         logger.error('failed:symlink:%s', e)
         raise StowError from e
 
-def remove(_, tf, /, dry_run):
+def remove(path, /, dry_run):
     try:
-        logger.info('remove:%s', tf)
+        logger.info('remove:%s', path)
         if dry_run:
             return
-        os.remove(tf)
+        os.remove(path)
     except (IsADirectoryError, FileNotFoundError) as e:
         logger.debug('remove:%s', e)
     except OSError as e:
         logger.error('failed:remove:%s', e)
         raise StowError from e
 
-def safe_remove(sf, tf, /, dry_run):
-    if samefile(sf, tf):
-        remove(sf, tf, dry_run=dry_run)
+def safe_remove(src, path, /, dry_run):
+    if samefile(src, path):
+        remove(path, dry_run=dry_run)
 
-def samefile(sf, tf):
+def samefile(path1, path2):
     try:
-        return os.path.samefile(sf, tf)
-    except FileNotFoundError:
+        return os.path.samefile(path1, path2)
+    except (OSError, FileNotFoundError):
         return False
     
-def rmdir(td, /, dry_run):
+def rmdir(path, /, dry_run):
     try:
-        logger.info('rmdir:%s', td)
-        with os.scandir(td) as s:
+        logger.info('rmdir:%s', path)
+        with os.scandir(path) as s:
             for _ in s:
-                logger.debug('rmdir:%s not empty', td)
+                logger.debug('rmdir:%s not empty', path)
                 return
         if dry_run:
             return
-        os.rmdir(td)
+        os.rmdir(path)
     except (NotADirectoryError, FileNotFoundError) as e:
         logger.debug('rmdir:%s', e)
     except OSError as e:
