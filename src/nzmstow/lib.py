@@ -4,16 +4,15 @@ import stat
 import logging
 import concurrent.futures as cf
 from collections import OrderedDict
-from itertools import islice
+from itertools import islice, chain
 from functools import partial
 from contextlib import ExitStack
 from .ignore import parse_ignores
 
 logger = logging.getLogger(__name__)
 
-def stow(tgt, /, *srcs, dry_run=False,
-         force_remove=False, create_hardlink=False,
-         ignore_name='.nzmstow-local-ignore'):
+def stow(tgt, /, *srcs, dry_run=False, force_remove=False, create_hardlink=False,
+         create_abs_link=False, ignore_name='.nzmstow-local-ignore'):
     warn_dry_run(dry_run)
 
     dst_dirs, src_files, dst_files = scanfs(tgt, *srcs, ignore_name=ignore_name)
@@ -25,7 +24,7 @@ def stow(tgt, /, *srcs, dry_run=False,
         mkdir(d, dry_run=dry_run)
 
     ln = link if create_hardlink else symlink
-    batch_apply(partial(ln, dry_run=dry_run), src_files, dst_files)
+    batch_apply(partial(ln, dry_run=dry_run, create_abs_link=create_abs_link), src_files, dst_files)
 
 def unstow(tgt, /, *srcs, dry_run=False,
            force_remove=False,
@@ -53,7 +52,9 @@ def scanfs(tgt, /, *srcs, ignore_name):
     tgt = os.path.realpath(tgt, strict=True)
     dirs = {}
     files = {}
-    for s in OrderedDict.fromkeys( os.path.realpath(s, strict=True) for s in srcs ):
+    for s in OrderedDict.fromkeys(srcs):
+        s = os.path.realpath(s, strict=True)
+        assert tgt != s
         dirs_tmp = {}
         files_tmp = {}
         ignores = []
@@ -70,7 +71,9 @@ def scanfs(tgt, /, *srcs, ignore_name):
                     pass
 
         with ExitStack() as stack:
-            ignores = parse_ignores( (p, stack.enter_context(open(f)).readlines()) for p, f in ignores )
+            ignores = parse_ignores( (p, chain(stack.enter_context(open(f)).readlines(),
+                                               [ f'/{ignore_name}' ]))
+                                     for p, f in ignores )
 
         dirs.update({ base: p for base, p in dirs_tmp.items() if p not in ignores })
         files.update({ base_f: src for base_f, src in files_tmp.items() if src not in ignores })
@@ -131,9 +134,9 @@ def link(src, dst, /, dry_run):
         logger.error('failed:link:%s', e)
         raise StowError from e
 
-def symlink(src, dst, /, dry_run):
-    src = os.path.relpath(os.path.abspath(src),
-                          os.path.abspath(os.path.dirname(dst)))
+def symlink(src, dst, /, dry_run, create_abs_link):
+    src = [ os.path.relpath,
+            lambda p1, _: p1 ][create_abs_link](src, dst)
     try:
         logger.info('symlink:%s -> %s', src, dst)
         if dry_run:

@@ -2,7 +2,7 @@ import os
 import os.path
 import logging
 import argparse
-from . import stow, unstow, StowError
+from .lib import stow, unstow, StowError
 
 def main():
     parser = argparse.ArgumentParser(prog='nzmstow', add_help=False,
@@ -23,6 +23,8 @@ def main():
                                    ' actually executing commands)',
                         action='store_true')
     parser.add_argument('-l', help='create hard links instead of symbolic links',
+                        action='store_true')
+    parser.add_argument('-A', help='create symbolic links with the absolute path of source',
                         action='store_true')
     parser.add_argument('-q', help='decrease output verbosity (qq is quieter)',
                         action='count', default=0)
@@ -54,6 +56,9 @@ def main():
         if not os.path.isdir(s):
             print(f'Source directory \'{s}\' does not exist.')
             return 1
+        if os.path.samefile(s, args.t):
+            print(f'Source directory \'{s}\' and the target directory \'{args.t}\' are the same.')
+            return 1
 
     kwargs = {}
     if args.D:
@@ -66,7 +71,7 @@ def main():
                     print(f'Target directory \'{args.t}\' and source directory'
                           f' \'{s}\' must be on the same device for hardlink.')
                     return 1
-        kwargs.update(dict(create_hardlink=args.l))
+        kwargs.update(dict(create_hardlink=args.l, create_abs_link=args.A))
 
     kwargs.update(dict(dry_run=args.n, force_remove=args.f))
     try:
