@@ -11,35 +11,30 @@ from .ignore import parse_ignores
 
 logger = logging.getLogger(__name__)
 
-def stow(tgt, /, *srcs, dry_run=False, force_remove=False, create_hardlink=False,
+def stow(tgt, /, *srcs, dry_run=False, update_target=False, create_hardlink=False,
          create_abs_link=False, ignore_name='.nzmstow-local-ignore'):
     warn_dry_run(dry_run)
 
     dst_dirs, src_files, dst_files = scanfs(tgt, *srcs, ignore_name=ignore_name)
 
-    if force_remove:
-        batch_apply(partial(remove, dry_run=dry_run), (d for D in (dst_dirs, dst_files) for d in D))
-
     for d in dst_dirs:
         mkdir(d, dry_run=dry_run)
 
-    ln = link if create_hardlink else symlink
-    batch_apply(partial(ln, dry_run=dry_run, create_abs_link=create_abs_link), src_files, dst_files)
+    kwargs = dict(dry_run=dry_run, update_target=update_target)
+    if create_hardlink:
+        ln = link
+    else:
+        ln = symlink
+        kwargs.update(dict(create_abs_link=create_abs_link))
+    batch_apply(partial(ln, **kwargs), src_files, dst_files)
 
 def unstow(tgt, /, *srcs, dry_run=False,
-           force_remove=False,
            ignore_name='.nzmstow-local-ignore'):
     warn_dry_run(dry_run)
 
     dst_dirs, src_files, dst_files = scanfs(tgt, *srcs, ignore_name=ignore_name)
 
-    if force_remove:
-        rm = remove
-        args = (src_files,)
-    else:
-        rm = safe_remove
-        args = (src_files, dst_files)
-    batch_apply(partial(rm, dry_run=dry_run), *args)
+    batch_apply(partial(safe_remove, dry_run=dry_run), src_files, dst_files)
 
     for d in reversed(dst_dirs):
         rmdir(d, dry_run=dry_run)
@@ -107,54 +102,73 @@ def batched(iterable, n):
 
 def mkdir(path, /, dry_run):
     try:
-        logger.info('mkdir:%s', path)
-        if dry_run:
+        if stat.S_ISDIR(os.lstat(path).st_mode):
             return
+    except FileNotFoundError:
+        pass
+
+    logger.info('mkdir:%s', path)
+    if dry_run:
+        return
+    try:
         os.mkdir(path)
     except FileExistsError as e:
-        try:
-            if not stat.S_ISDIR(os.lstat(path).st_mode):
-                logger.warning('mkdir:%s', e)
-        except FileNotFoundError:
-            return False
+        logger.warning('mkdir:%s', e)
     except OSError as e:
         logger.error('failed:mkdir:%s', e)
         raise StowError from e
 
-def link(src, dst, /, dry_run):
+def is_same_or_rm(src, dst, /, dry_run, update_target):
+    if samefile(src, dst):
+        return True
+    elif update_target and os.path.lexists(dst):
+        logger.debug('update:%s', dst)
+        if not dry_run:
+            os.remove(dst)
+
+def link(src, dst, /, dry_run, update_target):
+    if is_same_or_rm(src, dst, dry_run, update_target):
+        return
+
+    logger.info('link:%s', dst)
+    if dry_run:
+        return
     try:
-        logger.info('link:%s', dst)
-        if dry_run:
-            return
         os.link(src, dst, follow_symlinks=False)
     except FileExistsError as e:
-        if not samefile(src, dst):
-            logger.warning('link:%s', e)
+        logger.warning('link:%s', e)
     except OSError as e:
         logger.error('failed:link:%s', e)
         raise StowError from e
 
-def symlink(src, dst, /, dry_run, create_abs_link):
+def symlink(src, dst, /, dry_run, update_target, create_abs_link):
+    assert os.path.isabs(src)
+    assert os.path.isabs(dst)
+    if is_same_or_rm(src, dst, dry_run, update_target):
+        return
+
     src = [ os.path.relpath,
-            lambda p1, _: p1 ][create_abs_link](src, dst)
+            lambda p1, _: p1 ][create_abs_link](src, os.path.dirname(dst))
+    logger.info('symlink:%s -> %s', src, dst)
+    if dry_run:
+        return
     try:
-        logger.info('symlink:%s -> %s', src, dst)
-        if dry_run:
-            return
         os.symlink(src, dst)
     except FileExistsError as e:
-        src = os.path.join(os.path.dirname(dst), src)
-        if not samefile(src, dst):
-            logger.warning('symlink:%s', e)
+        logger.warning('symlink:%s', e)
     except OSError as e:
         logger.error('failed:symlink:%s', e)
         raise StowError from e
 
-def remove(path, /, dry_run):
+def safe_remove(src, path, /, dry_run):
+    if not samefile(src, path):
+        logger.debug('skip:remove:%s and %s are not the same', src, path)
+        return
+
+    logger.info('remove:%s', path)
+    if dry_run:
+        return
     try:
-        logger.info('remove:%s', path)
-        if dry_run:
-            return
         os.remove(path)
     except (IsADirectoryError, FileNotFoundError) as e:
         # maybe never come here
@@ -162,12 +176,6 @@ def remove(path, /, dry_run):
     except OSError as e:
         logger.error('failed:remove:%s', e)
         raise StowError from e
-
-def safe_remove(src, path, /, dry_run):
-    if samefile(src, path):
-        remove(path, dry_run=dry_run)
-    else:
-        logger.debug('skip:remove:%s and %s are not the same', src, path)
 
 def samefile(path1, path2):
     try:

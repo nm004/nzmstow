@@ -5,32 +5,28 @@ import argparse
 from .lib import stow, unstow, StowError
 
 def main():
-    parser = argparse.ArgumentParser(prog='nzmstow', add_help=False,
+    parser = argparse.ArgumentParser(prog='nzmstow',
                                      usage='%(prog)s [OPTION]... [-t TARGET] SOURCE...')
 
-    parser.add_argument('-t', help='path to directory where stowing into or deleting from'
-                                   ' SOURCE (default: current working directory)',
+    parser.add_argument('-t', help='path to directory where stowing into or deleting from '
+                                   'SOURCE (default: current working directory)',
                         default=os.curdir, metavar='TARGET')
     parser.add_argument('-D', help='delete source files from TARGET',
                         action='store_true')
-    parser.add_argument('-f', help='delete target files even if target file and'
-                                   ' source file are not the same file when'
-                                   ' unstowing (with -D), or delete target files'
-                                   ' before creating directories and links when'
-                                   ' stowing (without -D)',
+    parser.add_argument('-u', help='update the target file if the source file and the target file '
+                                   'are not the same',
                         action='store_true')
-    parser.add_argument('-n', help='dry-run mode (see what will happen without'
-                                   ' actually executing commands)',
+    parser.add_argument('-n', help='dry-run mode (with -v, you can see what will happen without '
+                                   'actually executing commands)',
                         action='store_true')
     parser.add_argument('-l', help='create hard links instead of symbolic links',
                         action='store_true')
     parser.add_argument('-A', help='create symbolic links with the absolute path of source',
                         action='store_true')
-    parser.add_argument('-q', help='decrease output verbosity (qq is quieter)',
+    parser.add_argument('-q', help='decrease output verbosity (-qq is quieter)',
                         action='count', default=0)
-    parser.add_argument('-v', help='increase output verbosity (vv is more verbose)',
+    parser.add_argument('-v', help='increase output verbosity (-vv is more verbose)',
                         action='count', default=0)
-    parser.add_argument('-h', '--help', help='show this help message and exit', action='help')
     parser.add_argument('source', help='path(s) to directory to be stowed', nargs='+',
                         metavar='SOURCE')
     args = parser.parse_args()
@@ -60,7 +56,7 @@ def main():
             print(f'Source directory \'{s}\' and the target directory \'{args.t}\' are the same.')
             return 1
 
-    kwargs = {}
+    kwargs = dict(dry_run=args.n)
     if args.D:
         stw = unstow
     else:
@@ -71,10 +67,9 @@ def main():
                     print(f'Target directory \'{args.t}\' and source directory'
                           f' \'{s}\' must be on the same device for hardlink.')
                     return 1
-        kwargs.update(dict(create_hardlink=args.l, create_abs_link=args.A))
+        kwargs.update(dict(update_target=args.u, create_hardlink=args.l, create_abs_link=args.A))
 
-    kwargs.update(dict(dry_run=args.n, force_remove=args.f))
     try:
-      stw(args.t, *args.source, **kwargs)
+        stw(args.t, *args.source, **kwargs)
     except StowError as e:
         return 2
