@@ -157,6 +157,7 @@ def remove(path, /, dry_run):
             return
         os.remove(path)
     except (IsADirectoryError, FileNotFoundError) as e:
+        # maybe never come here
         logger.debug('remove:%s', e)
     except OSError as e:
         logger.error('failed:remove:%s', e)
@@ -165,6 +166,8 @@ def remove(path, /, dry_run):
 def safe_remove(src, path, /, dry_run):
     if samefile(src, path):
         remove(path, dry_run=dry_run)
+    else:
+        logger.debug('skip:remove:%s and %s are not the same', src, path)
 
 def samefile(path1, path2):
     try:
@@ -173,16 +176,22 @@ def samefile(path1, path2):
         return False
     
 def rmdir(path, /, dry_run):
-    try:
-        logger.info('rmdir:%s', path)
-        with os.scandir(path) as s:
-            for _ in s:
-                logger.debug('rmdir:%s not empty', path)
-                return
-        if dry_run:
+    if not os.path.lexists(path):
+        return
+    with os.scandir(path) as s:
+        try:
+            next(s)
+            logger.debug('skip:rmdir:%s not empty', path)
             return
+        except StopIteration:
+            pass
+    logger.info('rmdir:%s', path)
+    if dry_run:
+        return
+    try:
         os.rmdir(path)
     except (NotADirectoryError, FileNotFoundError) as e:
+        # maybe never come here
         logger.debug('rmdir:%s', e)
     except OSError as e:
         logger.error('failed:rmdir:%s', e)
