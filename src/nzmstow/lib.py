@@ -71,7 +71,10 @@ def scanfs(tgt, /, *srcs, ignore_name):
                                      for p, f in ignores )
 
         dirs.update({ base: p for base, p in dirs_tmp.items() if p not in ignores })
-        files.update({ base_f: src for base_f, src in files_tmp.items() if src not in ignores })
+        files_tmp = { base_f: src for base_f, src in files_tmp.items() if src not in ignores }
+        for f in set(files) & set(files_tmp):
+            logger.warning('overlap:(%s, %s)', files[f], files_tmp[f])
+        files.update(files_tmp)
 
     del dirs['']
     return (
