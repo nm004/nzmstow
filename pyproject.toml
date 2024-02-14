@@ -1,6 +1,6 @@
 [project]
 name = "nzmstow"
-version = "0.17.3"
+version = "0.17.4"
 description = "Miyamori's simple GNU Stow imitation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,4 +20,4 @@ classifiers = [
 repository = "https://github.com/nm004/nzmstow"
 
 [project.scripts]
-nzmstow = "nzmstow:entry.main"
+nzmstow = "nzmstow:__main__.main"
