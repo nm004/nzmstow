@@ -12,4 +12,4 @@ TBD
 License
 --------
 
-GPLv3 or later
+CC0
