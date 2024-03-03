@@ -2,12 +2,12 @@ NZMstow
 ======
 
 Miyamori's minimal [GNU stow](https://www.gnu.org/software/stow/)
-imitation.
+reimplementation (or imitation).
 
 Example
 -------
 
-
+TBD
 
 License
 --------

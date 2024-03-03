@@ -1,3 +1,8 @@
+# NZMstow by Nozomi Miyamori is marked with CC0 1.0.
+# This file is a part of NZMstow.
+#
+# This is a small gitignore parser
+
 import os
 import os.path
 import stat
