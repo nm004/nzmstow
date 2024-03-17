@@ -9,10 +9,9 @@ import argparse
 import stat
 import logging
 import concurrent.futures as cf
-from collections import OrderedDict
-from itertools import islice, chain, batched
+from collections import ChainMap
+from itertools import chain, batched
 from functools import partial
-from contextlib import ExitStack
 from .ignore import parse_ignores
 
 logger = logging.getLogger(__name__)
@@ -120,37 +119,54 @@ def warn_dry_run(dry_run):
         logger.warning('This is dry-run. None of the commands will be actually performed')
 
 def scanfs(tgt, /, *srcs, ignore_name):
+    assert(len(srcs))
     tgt = os.path.realpath(tgt, strict=True)
-    dirs = {}
-    files = {}
-    for s in OrderedDict.fromkeys(srcs):
+    dirs = ChainMap()
+    files = ChainMap()
+    for s in srcs:
         s = os.path.realpath(s, strict=True)
         assert tgt != s
-        dirs_tmp = {}
-        files_tmp = {}
-        ignores = []
-        for p,_,F in os.walk(s):
+
+        D = {}
+        F = {}
+        I = []
+        for p,_,ff in os.walk(s):
             base = p[len(s):].removeprefix(os.sep)
-            dirs_tmp[base] = p
-            files_tmp.update({ os.path.join(base, f): os.path.join(p, f) for f in F })
-            for f in ( os.path.join(p, ignore_name), os.path.join(tgt, base, ignore_name) ):
+            D[base] = p
+            for f in ff:
+                F[os.path.join(base, f)] = os.path.join(p, f)
+            for f in ( os.path.join(p, ignore_name),
+                       os.path.join(tgt, base, ignore_name) ):
                 try:
                     if stat.S_ISREG(os.lstat(f).st_mode):
-                        ignores.append((p, f))
+                        I.append((p, open(f)))
                 except (OSError, ValueError, FileNotFoundError):
                     pass
 
-        with ExitStack() as stack:
-            ignores = parse_ignores( (p, chain(stack.enter_context(open(f)).readlines(),
-                                               ( f'/{ignore_name}', )))
-                                     for p, f in ignores )
+        ignores = parse_ignores( (p, chain(f.readlines(), (f'/{ignore_name}',)))
+                                 for p,f in I )
+        for _,f in I:
+            f.close()
 
-        dirs.update({ base: p for base, p in dirs_tmp.items() if p not in ignores })
-        files_tmp = { base_f: src for base_f, src in files_tmp.items() if src not in ignores }
-        for f in set(files) & set(files_tmp):
-            logger.warning('overlap:(%s, %s)', files[f], files_tmp[f])
-        files.update(files_tmp)
+        for k in D.copy():
+            if D[k] in ignores:
+                del D[k]
+        dirs.maps.append(D)
 
+        for k in F.copy():
+            if F[k] in ignores:
+                del F[k]
+        files.maps.append(F)
+
+    # maps[0] is always empty
+    del files.maps[0]
+    if len(files.maps) > 1:
+        for k in set.intersection(*(set(m) for m in files.maps)):
+            for m in files.maps:
+                if k in m:
+                    logger.warning('overlap:%s', m[f])
+
+    dirs = dict(dirs)
     del dirs['']
     return (
         tuple( os.path.join(tgt, base) for base in dirs),
